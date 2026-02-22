@@ -47,7 +47,7 @@ def check_auth():
     finally:
         cur.close()
         conn.close()
-    if keys:
+    if keys and keys[0] is not None:
         return {
             "status": "authorized",
             "next": f"/post_tweet"
