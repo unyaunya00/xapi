@@ -37,7 +37,7 @@ def check_auth():
     post_img.save(temp_path)
     session["post_img"] = temp_path
     session["post_txt"] = post_txt
-
+    print(session["session_id"], session["post_img"], session["post_txt"])
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -67,6 +67,7 @@ def call_back():
     session_id = session.get("session_id")
     if not session_id:
         return {"error": "no session"}, 401
+    print(session["session_id"], session["post_img"], session["post_txt"])
     verifier = request.args.get("oauth_verifier")
     oauth_token = request.args.get("oauth_token")
     auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
@@ -101,6 +102,7 @@ def call_back():
 
 @app.route("/post_tweet")
 def post_tweet():
+    print(session["session_id"], session["post_img"], session["post_txt"])
     session_id = session.get("session_id")
     if not session_id:
         return {"error": "no session"}, 401
