@@ -18,32 +18,30 @@ CS = os.getenv("CS")
 DATABASE_URL = os.getenv("DATABASE_URL")
 callback_url = "https://xapi-4s97.onrender.com/callback"
 
-@app.before_request
-def ensure_session():
-    if "session_id" not in session:
-        session["session_id"] = str(uuid.uuid4())
-
 @app.route("/check_auth", methods=["POST"])
 def check_auth():
-    session_id = session.get("session_id")
-    if not session_id:
-        return {"error": "no session"}, 401
-    session["post_img"] = None
-    session["post_txt"] = ""
+    user_id = request.form.get("user_id")
     post_img = request.files.get("image")
     post_txt = request.form.get("text")
     unique_name = f"{uuid.uuid4()}_{post_img.filename}"
     temp_path = os.path.join("/tmp", unique_name)
     post_img.save(temp_path)
-    session["post_img"] = temp_path
-    session["post_txt"] = post_txt
-    print(session["session_id"], session["post_img"], session["post_txt"])
+    expires_at = datetime.utcnow() + timedelta(days=30)
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
-            'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s', 
-            (session_id, )
+            '''
+            INSERT INTO "Apikeys" (sessionid, post_img, post_txt, expires_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (sessionid)
+            DO UPDATE SET 
+                post_img = EXCLUDED.post_img,
+                post_txt = EXCLUDED.post_txt,
+                expires_at = EXCLUDED.expires_at
+            RETURNING accesstoken, accesssecret
+            ''',
+            (user_id, temp_path, post_txt, expires_at)
         )
         keys = cur.fetchone()
     finally:
@@ -55,7 +53,8 @@ def check_auth():
             "next": f"/post_tweet"
         }
     else:
-        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+        my_callback_url = f"https://xapi-4s97.onrender.com/callback?uid={user_id}"
+        auth_handler = tweepy.OAuth1UserHandler(CK, CS, my_callback_url)
         authorize_url = auth_handler.get_authorization_url()
         return {
             "status": "not_authorized",
@@ -64,10 +63,9 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    session_id = session.get("session_id")
-    if not session_id:
+    user_id = request.args.get("uid")
+    if not user_id:
         return {"error": "no session"}, 401
-    print(session["session_id"], session["post_img"], session["post_txt"])
     verifier = request.args.get("oauth_verifier")
     oauth_token = request.args.get("oauth_token")
     auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
@@ -77,23 +75,14 @@ def call_back():
     }
     try:
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
-        expires_at = datetime.utcnow() + timedelta(days=30)
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s, expires_at = %s WHERE sessionid = %s',
-            (access_token, access_token_secret, expires_at, session_id)
+            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
+            (access_token, access_token_secret, user_id)
         )
-        if cur.rowcount == 0:
-            cur.execute(
-                '''
-                INSERT INTO "Apikeys" (sessionid, accesstoken, accesssecret, expires_at)
-                VALUES (%s, %s, %s, %s)
-                ''',
-                (session_id, access_token, access_token_secret, expires_at)
-            )
         conn.commit()
-        return redirect("/post_tweet")
+        return redirect(f"/post_tweet?uid={user_id}")
     except FileNotFoundError:
         return "投稿情報の有効期限が切れたか、見つかりません。", 400
     finally:
@@ -102,25 +91,22 @@ def call_back():
 
 @app.route("/post_tweet")
 def post_tweet():
-    print(session["session_id"], session["post_img"], session["post_txt"])
-    session_id = session.get("session_id")
-    if not session_id:
+    user_id = request.args.get("uid")
+    if not user_id:
         return {"error": "no session"}, 401
-    image_path = session.get("post_img")
-    if not os.path.exists(image_path):
-        return {"error": "file not found"}, 400
-    text = session.get("post_txt")
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute(
-        'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s', 
-        (session_id, )
+        'SELECT accesstoken, accesssecret, post_img, post_txt FROM "Apikeys" WHERE sessionid = %s', 
+        (user_id, )
     )
     keys = cur.fetchone()
     if not keys:
         return {"error": "not authorized"}, 401
     access_token = keys[0]
     access_secret = keys[1]
+    image_path = keys[2]
+    text = keys[3]
     cur.close()
     conn.close()
     
