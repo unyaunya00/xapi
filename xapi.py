@@ -3,7 +3,7 @@ import tweepy
 from flask import Flask, request, redirect, session
 import psycopg2
 from dotenv import load_dotenv
-import json
+from datetime import datetime, timedelta
 from urllib.parse import quote
 from flask_cors import CORS
 import os
@@ -76,19 +76,20 @@ def call_back():
     }
     try:
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
+        expires_at = datetime.utcnow() + timedelta(days=30)
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
-            (access_token, access_token_secret, session_id)
+            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s, expires_at = %s WHERE sessionid = %s',
+            (access_token, access_token_secret, expires_at, session_id)
         )
         if cur.rowcount == 0:
             cur.execute(
                 '''
-                INSERT INTO "Apikeys" (sessionid, accesstoken, accesssecret)
-                VALUES (%s, %s, %s)
+                INSERT INTO "Apikeys" (sessionid, accesstoken, accesssecret, expires_at)
+                VALUES (%s, %s, %s, %s)
                 ''',
-                (session_id, access_token, access_token_secret)
+                (session_id, access_token, access_token_secret, expires_at)
             )
         conn.commit()
         return redirect("/post_tweet")
