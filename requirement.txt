@@ -1,2 +1,6 @@
 Flask
+flask-cors
+tweepy
+psycopg2-binary
+python-dotenv
 gunicorn
