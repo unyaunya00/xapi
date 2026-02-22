@@ -1,101 +1,138 @@
 # python/twitter_post.py
 import tweepy
-from flask import Flask,request,redirect
+from flask import Flask, request, redirect, session
+import psycopg2
+from dotenv import load_dotenv
 import json
 from urllib.parse import quote
 from flask_cors import CORS
 import os
-import sys
-import threading
+import uuid
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY")
 CORS(app)
 
-# CK = "bTXf57wSznD0XClwo4awdRcHl"
-# CS = "8TykaNTi6yEyHIXivipACAM2SsxLmSNVECH3i1OBwerJxsiQey"
-auth_handler = None
-authorize_url = ""
-is_authorize = False
-# callback_url = "http://localhost:8024/callback"
+CK = os.getenv("CK")
+CS = os.getenv("CS")
+DATABASE_URL = os.getenv("DATABASE_URL")
+callback_url = "https://xapi-4s97.onrender.com/callback"
 
-def watch_stdin():
-    try:
-        sys.stdin.read()
-    except EOFError:
-        pass
-    os._exit(0)
+@app.before_request
+def ensure_session():
+    if "session_id" not in session:
+        session["session_id"] = str(uuid.uuid4())
 
-@app.route("/check_auth")
+@app.route("/check_auth", methods=["POST"])
 def check_auth():
-    global auth_handler, authorize_url
-    raw_img_path = request.args.get("img")
-    post_text = request.args.get("text")
-    if not is_authorize:
-        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
-        authorize_url = auth_handler.get_authorization_url()
-    with open(PENDING_FILE, "w", encoding="utf-8") as f:
-        json.dump({"img": raw_img_path, "text": post_text}, f)
-    if is_authorize:
-        query = f"?img={quote(raw_img_path)}&text={quote(post_text)}"
+    session_id = session.get("session_id")
+    if not session_id:
+        return {"error": "no session"}, 401
+    session["post_img"] = None
+    session["post_txt"] = ""
+    post_img = request.files.get("image")
+    post_txt = request.form.get("text")
+    unique_name = f"{uuid.uuid4()}_{post_img.filename}"
+    temp_path = os.path.join("/tmp", unique_name)
+    post_img.save(temp_path)
+    session["post_img"] = temp_path
+    session["post_txt"] = post_txt
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s', 
+            (session_id, )
+        )
+        keys = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if keys:
         return {
             "status": "authorized",
-            "next": f"/post_tweet{query}"
+            "next": f"/post_tweet"
         }
-    return {
-        "status": "not authorized",
-        "next": authorize_url
-    }
+    else:
+        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+        authorize_url = auth_handler.get_authorization_url()
+        return {
+            "status": "not_authorized",
+            "next": authorize_url
+        }
 
 @app.route("/callback")
 def call_back():
-    global is_authorize, auth_handler
+    session_id = session.get("session_id")
+    if not session_id:
+        return {"error": "no session"}, 401
     verifier = request.args.get("oauth_verifier")
     oauth_token = request.args.get("oauth_token")
-    if auth_handler is None:
-        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
-        auth_handler.request_token = {
-            'oauth_token': oauth_token,
-            'oauth_token_secret': verifier
-        }
+    auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+    auth_handler.request_token = {
+        'oauth_token': oauth_token,
+        'oauth_token_secret': verifier
+    }
     try:
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
-        is_authorize = True
-        auth_state["access_token"] = access_token
-        auth_state["access_secret"] = access_token_secret
-        data = {
-            "access_token": access_token,
-            "access_secret": access_token_secret
-        }
-        with open(TOKEN_FILE, "w", encoding='utf-8') as file:
-            json.dump(data, file, indent=1)
-        with open(PENDING_FILE, "r", encoding="utf-8") as f:
-            pending = json.load(f)
-        img = pending.get("img")
-        text = pending.get("text")
-        query = f"?img={quote(img)}&text={quote(text)}"
-        return redirect(f"/post_tweet{query}")
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
+            (access_token, access_token_secret, session_id)
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                '''
+                INSERT INTO "Apikeys" (sessionid, accesstoken, accesssecret)
+                VALUES (%s, %s, %s)
+                ''',
+                (session_id, access_token, access_token_secret)
+            )
+        conn.commit()
+        return redirect("/post_tweet")
     except FileNotFoundError:
         return "投稿情報の有効期限が切れたか、見つかりません。", 400
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route("/post_tweet")
 def post_tweet():
-    img_path = request.args.get("img")
-    text = request.args.get("text")
-    if not img_path:
-        print("Error: img_path is missing in request!")
-        return "Missing path", 400
+    session_id = session.get("session_id")
+    if not session_id:
+        return {"error": "no session"}, 401
+    image_path = session.get("post_img")
+    if not os.path.exists(image_path):
+        return {"error": "file not found"}, 400
+    text = session.get("post_txt")
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s', 
+        (session_id, )
+    )
+    keys = cur.fetchone()
+    if not keys:
+        return {"error": "not authorized"}, 401
+    access_token = keys[0]
+    access_secret = keys[1]
+    cur.close()
+    conn.close()
+    
     auth = tweepy.OAuth1UserHandler(
         CK, CS,
-        auth_state["access_token"],
-        auth_state["access_secret"]
+        access_token,
+        access_secret
     )
     api_v1 = tweepy.API(auth)
-    media = api_v1.media_upload(img_path)
+    media = api_v1.media_upload(image_path)
     client = tweepy.Client(
         consumer_key=CK,
         consumer_secret=CS,
-        access_token=auth_state["access_token"],
-        access_token_secret=auth_state["access_secret"]
+        access_token=access_token,
+        access_token_secret=access_secret
     )
     client.create_tweet(
         text=text,
@@ -103,19 +140,5 @@ def post_tweet():
     )
     return redirect("https://x.com/")
 
-def start_flask():
-    threading.Thread(target=watch_stdin, daemon=True).start()
-    global is_authorize, auth_state
-    try:
-        with open(TOKEN_FILE, 'r', encoding='utf-8') as file:
-            data = json.load(file)
-            if data.get("access_token") and data.get("access_secret"):
-                auth_state["access_token"] = data.get("access_token")
-                auth_state["access_secret"] = data.get("access_secret")
-                is_authorize = True
-    except FileNotFoundError:
-        pass
-    app.run(port=8024, debug=False, use_reloader=False)
-
 if __name__ == "__main__":
-    start_flask()
+    app.run(port=8024, debug=False, use_reloader=False)
