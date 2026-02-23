@@ -44,6 +44,7 @@ def check_auth():
             (user_id, temp_path, post_txt, expires_at)
         )
         keys = cur.fetchone()
+        conn.commit()
     finally:
         cur.close()
         conn.close()
