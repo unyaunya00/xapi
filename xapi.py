@@ -35,7 +35,7 @@ def check_auth():
             INSERT INTO "Apikeys" (sessionid, post_img, post_txt, expires_at)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (sessionid)
-            DO UPDATE SET 
+            DO UPDATE SET
                 post_img = EXCLUDED.post_img,
                 post_txt = EXCLUDED.post_txt,
                 expires_at = EXCLUDED.expires_at
@@ -48,7 +48,7 @@ def check_auth():
     finally:
         cur.close()
         conn.close()
-    if keys and keys[0] is not None:
+    if keys and keys[0] is not None and keys[1] is not None:
         return {
             "status": "authorized",
             "next": f"/post_tweet"
@@ -131,4 +131,4 @@ def post_tweet():
     return redirect("https://x.com/")
 
 if __name__ == "__main__":
-    app.run(port=8024, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=8024, debug=False, use_reloader=False)
