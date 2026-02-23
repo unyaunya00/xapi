@@ -53,11 +53,16 @@ def check_auth():
         if keys and keys[0] and keys[1]:
             return jsonify ({
                 "status": "authorized",
-                "next": "/post_tweet"
+                "next": f"/post_tweet?uid={user_id}"
             })
-        my_callback_url = f"https://xapi-4s97.onrender.com/callback?uid={user_id}"
-        auth_handler = tweepy.OAuth1UserHandler(CK, CS, my_callback_url)
+        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
         authorize_url = auth_handler.get_authorization_url()
+        tmp_token = auth_handler.request_token['oauth_token']
+        cur.execute(
+            'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
+            (tmp_token, user_id)
+        )
+        conn.commit()
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
@@ -68,11 +73,19 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    user_id = request.args.get("uid")
-    if not user_id:
-        return {"error": "no session"}, 401
     verifier = request.args.get("oauth_verifier")
     oauth_token = request.args.get("oauth_token")
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT sessionid FROM "Apikeys" WHERE request_token = %s',
+        (oauth_token,)
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"error": "Invalid token or session expired"}, 400
+    user_id = row[0]
+    
     auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
     auth_handler.request_token = {
         'oauth_token': oauth_token,
@@ -80,8 +93,6 @@ def call_back():
     }
     try:
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
         cur.execute(
             'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
             (access_token, access_token_secret, user_id)
