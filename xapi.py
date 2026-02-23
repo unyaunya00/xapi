@@ -21,6 +21,7 @@ callback_url = "https://xapi-4s97.onrender.com/callback"
 @app.route("/check_auth", methods=["POST"])
 def check_auth():
     user_id = request.form.get("user_id")
+    print(f"DEBUG: received user_id: {user_id}")
     post_img = request.files.get("image")
     post_txt = request.form.get("text")
     unique_name = f"{uuid.uuid4()}_{post_img.filename}"
@@ -31,6 +32,12 @@ def check_auth():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
+            'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s',
+            (user_id,)
+        )
+        keys = cur.fetchone()
+
+        cur.execute(
             '''
             INSERT INTO "Apikeys" (sessionid, post_img, post_txt, expires_at)
             VALUES (%s, %s, %s, %s)
@@ -39,21 +46,15 @@ def check_auth():
                 post_img = EXCLUDED.post_img,
                 post_txt = EXCLUDED.post_txt,
                 expires_at = EXCLUDED.expires_at
-            RETURNING accesstoken, accesssecret
             ''',
             (user_id, temp_path, post_txt, expires_at)
         )
-        keys = cur.fetchone()
         conn.commit()
-    finally:
-        cur.close()
-        conn.close()
-    if keys and keys[0] is not None and keys[1] is not None:
-        return {
-            "status": "authorized",
-            "next": f"/post_tweet"
-        }
-    else:
+        if keys and keys[0] and keys[1]:
+            return {
+                "status": "authorized",
+                "next": "/post_tweet"
+            }
         my_callback_url = f"https://xapi-4s97.onrender.com/callback?uid={user_id}"
         auth_handler = tweepy.OAuth1UserHandler(CK, CS, my_callback_url)
         authorize_url = auth_handler.get_authorization_url()
@@ -61,6 +62,9 @@ def check_auth():
             "status": "not_authorized",
             "next": authorize_url
         }
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route("/callback")
 def call_back():
