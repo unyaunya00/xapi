@@ -129,6 +129,3 @@ def post_tweet():
         media_ids=[media.media_id]
     )
     return redirect("https://x.com/")
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8024, debug=False, use_reloader=False)
