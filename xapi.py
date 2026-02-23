@@ -1,6 +1,6 @@
 # python/twitter_post.py
 import tweepy
-from flask import Flask, request, redirect, session
+from flask import Flask, request, redirect, jsonify
 import psycopg2
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -51,17 +51,17 @@ def check_auth():
         )
         conn.commit()
         if keys and keys[0] and keys[1]:
-            return {
+            return jsonify ({
                 "status": "authorized",
                 "next": "/post_tweet"
-            }
+            })
         my_callback_url = f"https://xapi-4s97.onrender.com/callback?uid={user_id}"
         auth_handler = tweepy.OAuth1UserHandler(CK, CS, my_callback_url)
         authorize_url = auth_handler.get_authorization_url()
-        return {
+        return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
-        }
+        })
     finally:
         cur.close()
         conn.close()
@@ -133,7 +133,3 @@ def post_tweet():
         media_ids=[media.media_id]
     )
     return redirect("https://x.com/")
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
