@@ -2,6 +2,7 @@
 import tweepy
 from flask import Flask, request, redirect, jsonify
 import psycopg2
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -16,12 +17,13 @@ CORS(app)
 CK = os.getenv("CK")
 CS = os.getenv("CS")
 DATABASE_URL = os.getenv("DATABASE_URL")
+ENCRYPT_KEY = os.getenv("ENCRYPT_KEY").encode()
+cipher_suite = Fernet(ENCRYPT_KEY)
 callback_url = "https://xapi-4s97.onrender.com/callback"
 
 @app.route("/check_auth", methods=["POST"])
 def check_auth():
     user_id = request.form.get("user_id")
-    print(f"DEBUG: received user_id: {user_id}")
     post_img = request.files.get("image")
     post_txt = request.form.get("text")
     unique_name = f"{uuid.uuid4()}_{post_img.filename}"
@@ -93,9 +95,11 @@ def call_back():
     }
     try:
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
+        encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
+        encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
             'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
-            (access_token, access_token_secret, user_id)
+            (encrypted_token, encrypted_secret, user_id)
         )
         conn.commit()
         return redirect(f"/post_tweet?uid={user_id}")
@@ -119,8 +123,8 @@ def post_tweet():
     keys = cur.fetchone()
     if not keys:
         return {"error": "not authorized"}, 401
-    access_token = keys[0]
-    access_secret = keys[1]
+    raw_access_token = cipher_suite.decrypt(keys[0].encode()).decode()
+    raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
     image_path = keys[2]
     text = keys[3]
     cur.close()
@@ -128,16 +132,16 @@ def post_tweet():
     
     auth = tweepy.OAuth1UserHandler(
         CK, CS,
-        access_token,
-        access_secret
+        raw_access_token,
+        raw_access_secret
     )
     api_v1 = tweepy.API(auth)
     media = api_v1.media_upload(image_path)
     client = tweepy.Client(
         consumer_key=CK,
         consumer_secret=CS,
-        access_token=access_token,
-        access_token_secret=access_secret
+        access_token=raw_access_token,
+        access_token_secret=raw_access_secret
     )
     client.create_tweet(
         text=text,
