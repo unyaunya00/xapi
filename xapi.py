@@ -58,7 +58,6 @@ def check_auth():
                 "next": f"/post_tweet?uid={user_id}"
             })
         auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
-        auth_handler.session.headers["User-Agent"] = "Mozilla/5.0"
         authorize_url = auth_handler.get_authorization_url()
         request_token = auth_handler.request_token["oauth_token"]
         request_secret = auth_handler.request_token["oauth_token_secret"]
