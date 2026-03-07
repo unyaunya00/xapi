@@ -124,7 +124,8 @@ def call_back():
                 "tweet.read",
                 "tweet.write",
                 "users.read",
-                "offline.access"
+                "offline.access",
+                "media.write"
             ],
             client_secret=CLIENT_SECRET
         )
