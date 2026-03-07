@@ -1,5 +1,4 @@
 # python/twitter_post.py
-from sqlite3 import Cursor
 import tweepy
 from flask import Flask, request, redirect, jsonify
 import psycopg2
@@ -10,7 +9,6 @@ from urllib.parse import quote
 from flask_cors import CORS
 import os
 import uuid
-import requests
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
@@ -18,8 +16,6 @@ CORS(app)
 
 CK = os.getenv("CK")
 CS = os.getenv("CS")
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ENCRYPT_KEY = os.getenv("ENCRYPT_KEY").encode()
 cipher_suite = Fernet(ENCRYPT_KEY)
@@ -38,16 +34,16 @@ def check_auth():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
-            'SELECT accesstoken FROM "Apikeys" WHERE sessionid = %s',
+            'SELECT access_token, access_secret FROM "Apikeys" WHERE session_id = %s',
             (user_id,)
         )
         keys = cur.fetchone()
 
         cur.execute(
             '''
-            INSERT INTO "Apikeys" (sessionid, post_img, post_txt, expires_at)
+            INSERT INTO "Apikeys" (session_id, post_img, post_txt, expires_at)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (sessionid)
+            ON CONFLICT (session_id)
             DO UPDATE SET
                 post_img = EXCLUDED.post_img,
                 post_txt = EXCLUDED.post_txt,
@@ -56,38 +52,28 @@ def check_auth():
             (user_id, temp_path, post_txt, expires_at)
         )
         conn.commit()
-        if keys and keys[0]:
+        if keys and keys[0] and keys[1]:
             return jsonify ({
                 "status": "authorized",
                 "next": f"/post_tweet?uid={user_id}"
             })
-        auth_handler = tweepy.OAuth2UserHandler(
-            client_id=CLIENT_ID,
-            redirect_uri=callback_url,
-            scope=[
-                "tweet.read",
-                "tweet.write",
-                "users.read",
-                "offline.access",
-                "media.write"
-            ],
-            client_secret=CLIENT_SECRET
-        )
-        authorize_url = auth_handler.get_authorization_url()
-        state = auth_handler._state
-        code_verifier = auth_handler._client.code_verifier
+        auth = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+        auth_url = auth.get_authorization_url()
+        token = auth.request_token["oauth_token"]
+        token_secret = auth.request_token["oauth_token_secret"]
         cur.execute(
-            '''
-            UPDATE "Apikeys"
-            SET state=%s, code_verifier=%s
-            WHERE sessionid=%s
-            ''',
-            (state, code_verifier, user_id)
+            """
+            UPDATE twitter_sessions
+            SET request_token=%s,
+                request_token_secret=%s
+            WHERE session_id=%s
+            """,
+            (token, token_secret, user_id)
         )
         conn.commit()
-        return jsonify ({
+        return jsonify({
             "status": "not_authorized",
-            "next": authorize_url
+            "next": auth_url
         })
     finally:
         cur.close()
@@ -95,62 +81,40 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    state = request.args.get('state')
-    code = request.args.get("code")
-    if not state or not code:
-        return {"error": "missing parameters"}, 400
-
+    oauth_token = request.args.get("oauth_token")
+    verifier = request.args.get("oauth_verifier")
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    try:
-        cur.execute(
-            '''
-            SELECT sessionid, code_verifier
-            FROM "Apikeys"
-            WHERE state=%s
-            ''',
-            (state,)
-        )
-        row = cur.fetchone()
-        if not row:
-            return {"error": "invalid state"}, 400
-        
-        user_id = row[0]
-        code_verifier = row[1]
-        auth_handler = tweepy.OAuth2UserHandler(
-            client_id=CLIENT_ID,
-            redirect_uri=callback_url,
-            scope=[
-                "tweet.read",
-                "tweet.write",
-                "users.read",
-                "offline.access",
-                "media.write"
-            ],
-            client_secret=CLIENT_SECRET
-        )
-        auth_handler._client.code_verifier = code_verifier
-        response = auth_handler.fetch_token(
-            request.url
-        )
-        access_token = response["access_token"]
-        encrypted = cipher_suite.encrypt(access_token.encode()).decode()
+    cur.execute(
+        """
+        SELECT session_id, request_token_secret
+        FROM twitter_sessions
+        WHERE request_token=%s
+        """,
+        (oauth_token,)
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"error": "Invalid token or session expired"}, 400
+    user_id, token_secret = row
     
+    auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+    auth_handler.request_token = {
+        "oauth_token": oauth_token,
+        "oauth_token_secret": token_secret
+    }
+    try:
+        access_token, access_token_secret = auth_handler.get_access_token(verifier)
+        encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
+        encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
-            '''
-            UPDATE "Apikeys"
-            SET accesstoken = %s,
-                state = NULL
-            WHERE sessionid = %s
-            ''',
-            (encrypted, user_id)
+            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE session_id = %s',
+            (encrypted_token, encrypted_secret, user_id)
         )
         conn.commit()
-
         return redirect(f"/post_tweet?uid={user_id}")
     except FileNotFoundError:
         return "投稿情報の有効期限が切れたか、見つかりません。", 400
-
     finally:
         cur.close()
         conn.close()
@@ -163,41 +127,38 @@ def post_tweet():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute(
-        'SELECT accesstoken, post_img, post_txt FROM "Apikeys" WHERE sessionid = %s', 
-        (user_id, )
+        """
+        SELECT access_token, access_secret, post_text, image_path
+        FROM twitter_sessions
+        WHERE session_id=%s
+        """,
+        (user_id,)
     )
     keys = cur.fetchone()
     if not keys:
         return {"error": "not authorized"}, 401
     raw_access_token = cipher_suite.decrypt(keys[0].encode()).decode()
-    image_path = keys[1]
-    text = keys[2]
+    raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
+    image_path = keys[2]
+    text = keys[3]
     cur.close()
     conn.close()
-    headers = {
-        "Authorization": f"Bearer {raw_access_token}"
-    }
-    with open(image_path, "rb") as f:
-        files = {"media": f}
-
-        res = requests.post(
-            "https://upload.twitter.com/1.1/media/upload.json",
-            headers=headers,
-            files=files
-        )
-    if res.status_code != 200:
-        return {
-            "error": "media upload failed",
-            "detail": res.text
-        }, 500
-    media_id = res.json()["media_id_string"]
-    client = tweepy.Client(access_token=raw_access_token)
+    
+    auth = tweepy.OAuth1UserHandler(
+        CK, CS,
+        raw_access_token,
+        raw_access_secret
+    )
+    api_v1 = tweepy.API(auth)
+    media = api_v1.media_upload(image_path)
+    client = tweepy.Client(
+        consumer_key=CK,
+        consumer_secret=CS,
+        access_token=raw_access_token,
+        access_token_secret=raw_access_secret
+    )
     client.create_tweet(
         text=text,
-        media_ids=[media_id]
+        media_ids=[media.media_id]
     )
     return redirect("https://x.com/")
-
-@app.route("/")
-def health():
-    return "OK", 200
