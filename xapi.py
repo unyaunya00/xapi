@@ -75,7 +75,7 @@ def check_auth():
         )
         # state = secrets.randbits(32)
         authorize_url = auth_handler.get_authorization_url()
-        state = auth_handler.state
+        state = auth_handler.state()
         cur.execute(
             'UPDATE "Apikeys" SET state = %s WHERE sessionid = %s',        
             (state, user_id)
