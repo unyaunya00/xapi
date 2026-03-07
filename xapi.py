@@ -75,9 +75,14 @@ def check_auth():
         )
         authorize_url = auth_handler.get_authorization_url()
         state = auth_handler._state
+        code_verifier = auth_handler._client.code_verifier
         cur.execute(
-            'UPDATE "Apikeys" SET state = %s WHERE sessionid = %s',        
-            (state, user_id)
+            '''
+            UPDATE "Apikeys"
+            SET state=%s, code_verifier=%s
+            WHERE sessionid=%s
+            ''',
+            (state, code_verifier, user_id)
         )
         conn.commit()
         return jsonify ({
@@ -100,9 +105,9 @@ def call_back():
     try:
         cur.execute(
             '''
-            SELECT sessionid
+            SELECT sessionid, code_verifier
             FROM "Apikeys"
-            WHERE state = %s
+            WHERE state=%s
             ''',
             (state,)
         )
@@ -111,6 +116,7 @@ def call_back():
             return {"error": "invalid state"}, 400
         
         user_id = row[0]
+        code_verifier = row[1]
         auth_handler = tweepy.OAuth2UserHandler(
             client_id=CLIENT_ID,
             redirect_uri=callback_url,
@@ -122,6 +128,7 @@ def call_back():
             ],
             client_secret=CLIENT_SECRET
         )
+        auth_handler._client.code_verifier = code_verifier
         response = auth_handler.fetch_token(
             request.url
         )
