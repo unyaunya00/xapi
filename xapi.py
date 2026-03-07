@@ -67,6 +67,11 @@ def check_auth():
             client_secret=CLIENT_SECRET
         )
         authorize_url = oauth2_handler.get_authorization_url(state=state)
+        current_state = oauth2_handler.state
+        cur.execute(
+            'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
+            (current_state, user_id)
+        )
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
