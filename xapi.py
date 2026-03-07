@@ -193,5 +193,5 @@ def post_tweet():
     return redirect("https://x.com/")
 
 @app.route("/")
-def home():
-    return redirect("OK")
+def health():
+    return "OK", 200
