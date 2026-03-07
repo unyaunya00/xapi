@@ -60,7 +60,7 @@ def check_auth():
             scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
             client_secret=CLIENT_SECRET
         )
-        authorize_url = oauth2_handler.get_authorization_url(state=state)
+        authorize_url = oauth2_handler.get_authorization_url()
         current_state = oauth2_handler.state
         cur.execute(
             'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
