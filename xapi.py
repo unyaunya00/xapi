@@ -73,13 +73,14 @@ def check_auth():
             ],
             client_secret=CLIENT_SECRET
         )
-        state = secrets.randbits(32)
+        # state = secrets.randbits(32)
+        authorize_url = auth_handler.get_authorization_url()
+        state = auth_handler.state
         cur.execute(
             'UPDATE "Apikeys" SET state = %s WHERE sessionid = %s',        
             (state, user_id)
         )
         conn.commit()
-        authorize_url = auth_handler.get_authorization_url(state=state)
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
