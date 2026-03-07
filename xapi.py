@@ -185,11 +185,6 @@ def post_tweet():
             headers=headers,
             files=files
         )
-    res = requests.post(
-        "https://upload.twitter.com/1.1/media/upload.json",
-        headers=headers,
-        files=files
-    )
     if res.status_code != 200:
         return {
             "error": "media upload failed",
