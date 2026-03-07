@@ -150,7 +150,7 @@ def call_back():
         return redirect(f"/post_tweet?uid={user_id}")
     except FileNotFoundError:
         return "投稿情報の有効期限が切れたか、見つかりません。", 400
-        
+
     finally:
         cur.close()
         conn.close()
@@ -177,14 +177,25 @@ def post_tweet():
     headers = {
         "Authorization": f"Bearer {raw_access_token}"
     }
-    files = {
-        "media": open(image_path, "rb")
-    }
+    with open(image_path, "rb") as f:
+        files = {"media": f}
+
+        res = requests.post(
+            "https://upload.twitter.com/1.1/media/upload.json",
+            headers=headers,
+            files=files
+        )
     res = requests.post(
         "https://upload.twitter.com/1.1/media/upload.json",
         headers=headers,
         files=files
     )
+    if res.status_code != 200:
+        return {
+            "error": "media upload failed",
+            "detail": res.text
+        }, 500
+
     media_id = res.json()["media_id_string"]
     client = tweepy.Client(access_token=raw_access_token)
     client.create_tweet(
