@@ -27,12 +27,12 @@ def check_auth():
     post_img = request.files.get("image")
     post_txt = request.form.get("text")
     unique_name = f"{uuid.uuid4()}_{post_img.filename}"
-    temp_path = os.path.join("/tmp", unique_name)
-    post_img.save(temp_path)
+    tmp_path = os.path.join("/tmp", unique_name)
+    post_img.save(tmp_path)
     expires_at = datetime.utcnow() + timedelta(days=30)
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
         cur.execute(
             'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s',
             (user_id,)
@@ -49,7 +49,7 @@ def check_auth():
                 post_txt = EXCLUDED.post_txt,
                 expires_at = EXCLUDED.expires_at
             ''',
-            (user_id, temp_path, post_txt, expires_at)
+            (user_id, tmp_path, post_txt, expires_at)
         )
         conn.commit()
         if keys and keys[0] and keys[1]:
@@ -58,11 +58,17 @@ def check_auth():
                 "next": f"/post_tweet?uid={user_id}"
             })
         auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+        auth_handler.session.headers["User-Agent"] = "Mozilla/5.0"
         authorize_url = auth_handler.get_authorization_url()
-        tmp_token = auth_handler.request_token['oauth_token']
+        request_token = auth_handler.request_token["oauth_token"]
+        request_secret = auth_handler.request_token["oauth_token_secret"]
         cur.execute(
-            'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
-            (tmp_token, user_id)
+            '''
+            UPDATE "Apikeys"
+            SET request_token=%s, request_secret=%s
+            WHERE sessionid=%s
+            ''',
+            (request_token, request_secret, user_id)
         )
         conn.commit()
         return jsonify ({
@@ -75,30 +81,42 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    verifier = request.args.get("oauth_verifier")
     oauth_token = request.args.get("oauth_token")
+    verifier = request.args.get("oauth_verifier")
+    if not oauth_token:
+        return {"error": "invalid oauth"}, 400
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute(
-        'SELECT sessionid FROM "Apikeys" WHERE request_token = %s',
-        (oauth_token,)
-    )
-    row = cur.fetchone()
-    if not row:
-        return {"error": "Invalid token or session expired"}, 400
-    user_id = row[0]
-    
-    auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
-    auth_handler.request_token = {
-        'oauth_token': oauth_token,
-        'oauth_token_secret': verifier
-    }
     try:
+        cur.execute(
+            '''
+            SELECT sessionid, request_secret
+            FROM "Apikeys"
+            WHERE request_token=%s
+            ''',
+            (oauth_token,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"error": "Invalid token or session expired"}, 400
+        user_id = row[0]
+        request_secret = row[1]
+        
+        auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+        auth_handler.request_token = {
+            "oauth_token": oauth_token,
+            "oauth_token_secret": request_secret
+        }
         access_token, access_token_secret = auth_handler.get_access_token(verifier)
         encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
         encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
+            '''
+            UPDATE "Apikeys"
+            SET accesstoken=%s,
+                accesssecret=%s
+            WHERE sessionid=%s
+            ''',
             (encrypted_token, encrypted_secret, user_id)
         )
         conn.commit()
@@ -116,35 +134,45 @@ def post_tweet():
         return {"error": "no session"}, 401
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute(
-        'SELECT accesstoken, accesssecret, post_img, post_txt FROM "Apikeys" WHERE sessionid = %s', 
-        (user_id, )
-    )
-    keys = cur.fetchone()
-    if not keys:
-        return {"error": "not authorized"}, 401
-    raw_access_token = cipher_suite.decrypt(keys[0].encode()).decode()
-    raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
-    image_path = keys[2]
-    text = keys[3]
-    cur.close()
-    conn.close()
-    
-    auth = tweepy.OAuth1UserHandler(
-        CK, CS,
-        raw_access_token,
-        raw_access_secret
-    )
-    api_v1 = tweepy.API(auth)
-    media = api_v1.media_upload(image_path)
-    client = tweepy.Client(
-        consumer_key=CK,
-        consumer_secret=CS,
-        access_token=raw_access_token,
-        access_token_secret=raw_access_secret
-    )
-    client.create_tweet(
-        text=text,
-        media_ids=[media.media_id]
-    )
-    return redirect("https://x.com/")
+    try:
+        cur.execute(
+            '''
+            SELECT accesstoken, accesssecret, post_img, post_txt
+            FROM "Apikeys"
+            WHERE sessionid=%s
+            ''',
+            (user_id,)
+        )
+        keys = cur.fetchone()
+        if not keys:
+            return {"error": "not authorized"}, 401
+        raw_access_token = cipher_suite.decrypt(keys[0].encode()).decode()
+        raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
+        image_path = keys[2]
+        text = keys[3]
+        
+        auth = tweepy.OAuth1UserHandler(
+            CK, CS,
+            raw_access_token,
+            raw_access_secret
+        )
+        api_v1 = tweepy.API(auth)
+        media = api_v1.media_upload(image_path)
+        client = tweepy.Client(
+            consumer_key=CK,
+            consumer_secret=CS,
+            access_token=raw_access_token,
+            access_token_secret=raw_access_secret
+        )
+        client.create_tweet(
+            text=text,
+            media_ids=[media.media_id]
+        )
+        return redirect("https://x.com/")
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route("/")
+def home():
+    return {"status": "ok"}
