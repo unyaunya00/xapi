@@ -150,6 +150,7 @@ def call_back():
         return redirect(f"/post_tweet?uid={user_id}")
     except FileNotFoundError:
         return "投稿情報の有効期限が切れたか、見つかりません。", 400
+        
     finally:
         cur.close()
         conn.close()
