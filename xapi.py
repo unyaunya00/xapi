@@ -71,12 +71,6 @@ def check_auth():
             client_secret=CLIENT_SECRET
         )
         authorize_url = auth_handler.get_authorization_url()
-        access_token = auth_handler.fetch_token(authorize_url)
-        cur.execute(
-            'UPDATE "Apikeys" SET access_token = %s WHERE sessionid = %s',
-            (access_token, user_id)
-        )
-        conn.commit()
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
@@ -160,3 +154,7 @@ def post_tweet():
         media_ids=[media.media_id]
     )
     return redirect("https://x.com/")
+
+@app.route("/")
+def home():
+    return redirect("OK")
