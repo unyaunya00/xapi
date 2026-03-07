@@ -173,7 +173,6 @@ def post_tweet():
     text = keys[2]
     cur.close()
     conn.close()
-    
     headers = {
         "Authorization": f"Bearer {raw_access_token}"
     }
