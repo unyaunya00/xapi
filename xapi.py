@@ -9,7 +9,6 @@ from urllib.parse import quote
 from flask_cors import CORS
 import os
 import uuid
-import secrets
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
@@ -36,7 +35,10 @@ def check_auth():
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute('SELECT accesstoken FROM "Apikeys" WHERE sessionid = %s', (user_id,))
+        cur.execute(
+            'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s',
+            (user_id,)
+        )
         keys = cur.fetchone()
 
         cur.execute(
@@ -52,19 +54,27 @@ def check_auth():
             (user_id, temp_path, post_txt, expires_at)
         )
         conn.commit()
-        if keys and keys[0]:
-            return jsonify({"status": "authorized", "next": f"/post_tweet?uid={user_id}"})
-        oauth2_handler = tweepy.OAuth2UserHandler(
+        if keys and keys[0] and keys[1]:
+            return jsonify ({
+                "status": "authorized",
+                "next": f"/post_tweet?uid={user_id}"
+            })
+        auth_handler = tweepy.OAuth2UserHandler(
             client_id=CLIENT_ID,
             redirect_uri=callback_url,
-            scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
+            scope=[
+                "tweet.read",
+                "tweet.write",
+                "users.read",
+                "offline.access"
+            ],
             client_secret=CLIENT_SECRET
         )
-        authorize_url = oauth2_handler.get_authorization_url()
-        current_state = oauth2_handler.state
+        authorize_url = auth_handler.get_authorization_url()
+        access_token = auth_handler.fetch_token(authorize_url)
         cur.execute(
-            'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
-            (current_state, user_id)
+            'UPDATE "Apikeys" SET access_token = %s WHERE sessionid = %s',
+            (access_token, user_id)
         )
         conn.commit()
         return jsonify ({
@@ -77,36 +87,31 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    state_from_twitter = request.args.get("state")
-    code = request.args.get("code")
-    if not state_from_twitter or not code:
-        return "パラメータが足りません。", 400
+    verifier = request.args.get("oauth_verifier")
+    oauth_token = request.args.get("oauth_token")
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+    cur.execute(
+        'SELECT sessionid FROM "Apikeys" WHERE request_token = %s',
+        (oauth_token,)
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"error": "Invalid token or session expired"}, 400
+    user_id = row[0]
+    
+    auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
+    auth_handler.request_token = {
+        'oauth_token': oauth_token,
+        'oauth_token_secret': verifier
+    }
     try:
-        cur.execute(
-            'SELECT sessionid FROM "Apikeys" WHERE request_token = %s AND expires_at > NOW()',
-            (state_from_twitter,)
-        )
-        row = cur.fetchone()
-        if not row:
-            return {"error": "Invalid token or session expired"}, 400
-        user_id = row[0]
-        
-        oauth2_handler = tweepy.OAuth2UserHandler(
-            client_id=CLIENT_ID,
-            redirect_uri=callback_url,
-            scope=["tweet.read", "tweet.write", "users.read", "offline.access", "media.write"],
-            client_secret=CLIENT_SECRET
-        )
-        token = oauth2_handler.fetch_token(
-            authorization_response=request.url
-        )
-        access_token = token.get("access_token")
+        access_token, access_token_secret = auth_handler.get_access_token(verifier)
         encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
+        encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, request_token = NULL WHERE sessionid = %s',
-            (encrypted_token, user_id)
+            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
+            (encrypted_token, encrypted_secret, user_id)
         )
         conn.commit()
         return redirect(f"/post_tweet?uid={user_id}")
@@ -129,38 +134,29 @@ def post_tweet():
     )
     keys = cur.fetchone()
     if not keys:
-        cur.close()
-        conn.close()
         return {"error": "not authorized"}, 401
     raw_access_token = cipher_suite.decrypt(keys[0].encode()).decode()
-    is_oauth2 = keys[1] is None
-    if not is_oauth2:
-        raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
+    raw_access_secret = cipher_suite.decrypt(keys[1].encode()).decode()
     image_path = keys[2]
     text = keys[3]
     cur.close()
     conn.close()
-    if is_oauth2:
-        client = tweepy.Client(access_token=raw_access_token)
-    else:
-        client = tweepy.Client(
-            consumer_key=CK,
-            consumer_secret=CS,
-            access_token=raw_access_token,
-            access_token_secret=raw_access_secret
-        )
-    api_v1 = tweepy.API(client)
+    
+    auth = tweepy.OAuth1UserHandler(
+        CK, CS,
+        raw_access_token,
+        raw_access_secret
+    )
+    api_v1 = tweepy.API(auth)
     media = api_v1.media_upload(image_path)
-    if is_oauth2:
-        client = tweepy.Client(user_auth=False, access_token=raw_access_token)
-    else:
-        client = tweepy.Client(
-            consumer_key=CK, consumer_secret=CS,
-            access_token=raw_access_token, access_token_secret=raw_access_secret
-        )
-
-    client.create_tweet(text=text, media_ids=[media.media_id])
-    if os.path.exists(image_path):
-        os.remove(image_path)
-
-    return redirect("https://x.com/home")
+    client = tweepy.Client(
+        consumer_key=CK,
+        consumer_secret=CS,
+        access_token=raw_access_token,
+        access_token_secret=raw_access_secret
+    )
+    client.create_tweet(
+        text=text,
+        media_ids=[media.media_id]
+    )
+    return redirect("https://x.com/")
