@@ -54,12 +54,6 @@ def check_auth():
         conn.commit()
         if keys and keys[0]:
             return jsonify({"status": "authorized", "next": f"/post_tweet?uid={user_id}"})
-        state = secrets.token_urlsafe(32)
-        cur.execute(
-            'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
-            (state, user_id)
-        )
-        conn.commit()
         oauth2_handler = tweepy.OAuth2UserHandler(
             client_id=CLIENT_ID,
             redirect_uri=callback_url,
@@ -72,6 +66,7 @@ def check_auth():
             'UPDATE "Apikeys" SET request_token = %s WHERE sessionid = %s',
             (current_state, user_id)
         )
+        conn.commit()
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
