@@ -1,4 +1,5 @@
 # python/twitter_post.py
+from sqlite3 import Cursor
 import tweepy
 from flask import Flask, request, redirect, jsonify
 import psycopg2
@@ -9,6 +10,7 @@ from urllib.parse import quote
 from flask_cors import CORS
 import os
 import uuid
+import secrets
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY")
@@ -36,7 +38,7 @@ def check_auth():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
-            'SELECT accesstoken, accesssecret FROM "Apikeys" WHERE sessionid = %s',
+            'SELECT accesstoken FROM "Apikeys" WHERE sessionid = %s',
             (user_id,)
         )
         keys = cur.fetchone()
@@ -54,7 +56,7 @@ def check_auth():
             (user_id, temp_path, post_txt, expires_at)
         )
         conn.commit()
-        if keys and keys[0] and keys[1]:
+        if keys and keys[0]:
             return jsonify ({
                 "status": "authorized",
                 "next": f"/post_tweet?uid={user_id}"
@@ -66,11 +68,18 @@ def check_auth():
                 "tweet.read",
                 "tweet.write",
                 "users.read",
-                "offline.access"
+                "offline.access",
+                "media.write"
             ],
             client_secret=CLIENT_SECRET
         )
-        authorize_url = auth_handler.get_authorization_url()
+        state = secrets.randbits(32)
+        cur.execute(
+            'UPDATE "Apikeys" SET state = %s WHERE sessionid = %s',        
+            (state, user_id)
+        )
+        conn.commit()
+        authorize_url = auth_handler.get_authorization_url(state=state)
         return jsonify ({
             "status": "not_authorized",
             "next": authorize_url
@@ -81,31 +90,37 @@ def check_auth():
 
 @app.route("/callback")
 def call_back():
-    verifier = request.args.get("oauth_verifier")
-    oauth_token = request.args.get("oauth_token")
+    auth_handler = tweepy.OAuth2UserHandler(
+        client_id=CLIENT_ID,
+        redirect_uri=callback_url,
+        scope=[
+            "tweet.read",
+            "tweet.write",
+            "users.read",
+            "offline.access"
+        ],
+        client_secret=CLIENT_SECRET
+    )
+    authorize_url = auth_handler.get_authorization_url()
+    response = auth_handler.fetch_token(
+        authorize_url
+    )
+    access_token = response["access_token"]
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute(
-        'SELECT sessionid FROM "Apikeys" WHERE request_token = %s',
-        (oauth_token,)
+        'SELECT sessionid FROM "Apikeys" WHERE access_token = %s',
+        (access_token,)
     )
     row = cur.fetchone()
     if not row:
         return {"error": "Invalid token or session expired"}, 400
     user_id = row[0]
-    
-    auth_handler = tweepy.OAuth1UserHandler(CK, CS, callback_url)
-    auth_handler.request_token = {
-        'oauth_token': oauth_token,
-        'oauth_token_secret': verifier
-    }
     try:
-        access_token, access_token_secret = auth_handler.get_access_token(verifier)
         encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
-        encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE sessionid = %s',
-            (encrypted_token, encrypted_secret, user_id)
+            'UPDATE "Apikeys" SET accesstoken = %s WHERE sessionid = %s',
+            (encrypted_token,  user_id)
         )
         conn.commit()
         return redirect(f"/post_tweet?uid={user_id}")
@@ -136,10 +151,16 @@ def post_tweet():
     cur.close()
     conn.close()
     
-    auth = tweepy.OAuth1UserHandler(
-        CK, CS,
-        raw_access_token,
-        raw_access_secret
+    auth_handler = tweepy.OAuth2UserHandler(
+        client_id=CLIENT_ID,
+        redirect_uri=callback_url,
+        scope=[
+            "tweet.read",
+            "tweet.write",
+            "users.read",
+            "offline.access"
+        ],
+        client_secret=CLIENT_SECRET
     )
     api_v1 = tweepy.API(auth)
     media = api_v1.media_upload(image_path)
