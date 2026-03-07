@@ -134,6 +134,7 @@ def call_back():
             request.url
         )
         access_token = response["access_token"]
+        encrypted = cipher_suite.encrypt(access_token.encode()).decode()
     
         cur.execute(
             '''
@@ -142,7 +143,7 @@ def call_back():
                 state = NULL
             WHERE sessionid = %s
             ''',
-            (access_token, user_id)
+            (encrypted, user_id)
         )
         conn.commit()
 
