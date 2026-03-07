@@ -164,30 +164,23 @@ def post_tweet():
     text = keys[2]
     cur.close()
     conn.close()
-    
     headers = {
         "Authorization": f"Bearer {raw_access_token}"
     }
-
     files = {
         "media": open(image_path, "rb")
     }
-
     res = requests.post(
         "https://upload.twitter.com/1.1/media/upload.json",
         headers=headers,
         files=files
     )
-
     media_id = res.json()["media_id_string"]
-
     client = tweepy.Client(access_token=raw_access_token)
-
     client.create_tweet(
         text=text,
         media_ids=[media_id]
     )
-
     return redirect("https://x.com/")
 
 @app.route("/")
