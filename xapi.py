@@ -190,7 +190,6 @@ def post_tweet():
             "error": "media upload failed",
             "detail": res.text
         }, 500
-
     media_id = res.json()["media_id_string"]
     client = tweepy.Client(access_token=raw_access_token)
     client.create_tweet(
