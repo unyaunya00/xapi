@@ -63,7 +63,7 @@ def check_auth():
         token_secret = auth.request_token["oauth_token_secret"]
         cur.execute(
             """
-            UPDATE Apikeys
+            UPDATE "Apikeys"
             SET request_token=%s,
                 request_token_secret=%s
             WHERE session_id=%s
@@ -88,7 +88,7 @@ def call_back():
     cur.execute(
         """
         SELECT session_id, request_token_secret
-        FROM Apikeys
+        FROM "Apikeys"
         WHERE request_token=%s
         """,
         (oauth_token,)
@@ -129,7 +129,7 @@ def post_tweet():
     cur.execute(
         """
         SELECT access_token, access_secret, post_img, post_txt
-        FROM Apikeys
+        FROM "Apikeys"
         WHERE session_id=%s
         """,
         (user_id,)
