@@ -63,7 +63,7 @@ def check_auth():
         token_secret = auth.request_token["oauth_token_secret"]
         cur.execute(
             """
-            UPDATE twitter_sessions
+            UPDATE Apikeys
             SET request_token=%s,
                 request_token_secret=%s
             WHERE session_id=%s
@@ -88,7 +88,7 @@ def call_back():
     cur.execute(
         """
         SELECT session_id, request_token_secret
-        FROM twitter_sessions
+        FROM Apikeys
         WHERE request_token=%s
         """,
         (oauth_token,)
@@ -108,7 +108,7 @@ def call_back():
         encrypted_token = cipher_suite.encrypt(access_token.encode()).decode()
         encrypted_secret = cipher_suite.encrypt(access_token_secret.encode()).decode()
         cur.execute(
-            'UPDATE "Apikeys" SET accesstoken = %s, accesssecret = %s WHERE session_id = %s',
+            'UPDATE "Apikeys" SET access_token = %s, access_secret = %s WHERE session_id = %s',
             (encrypted_token, encrypted_secret, user_id)
         )
         conn.commit()
@@ -128,8 +128,8 @@ def post_tweet():
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT access_token, access_secret, post_text, image_path
-        FROM twitter_sessions
+        SELECT access_token, access_secret, post_img, post_txt
+        FROM Apikeys
         WHERE session_id=%s
         """,
         (user_id,)
