@@ -19,7 +19,7 @@ CS = os.getenv("CS")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ENCRYPT_KEY = os.getenv("ENCRYPT_KEY").encode()
 cipher_suite = Fernet(ENCRYPT_KEY)
-callback_url = "https://xapi-4s97.onrender.com/callback"
+callback_url = os.getenv("CALLBACK_URL")
 
 @app.route("/check_auth", methods=["POST"])
 def check_auth():
